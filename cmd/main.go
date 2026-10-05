@@ -59,7 +59,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	limited := http.MaxBytesHandler(rateLimit(limiter, handler), 1<<20)
+	limited := http.MaxBytesHandler(rateLimit(limiter, browsersToDocs(handler)), 1<<20)
 	mux.Handle(path, limited)
 	mux.Handle(path+"/", limited)
 
@@ -89,6 +89,25 @@ func main() {
 	if err := srv.Shutdown(shutdown); err != nil {
 		log.Error("shutdown failed", "error", err)
 	}
+}
+
+// docsURL is where a person can read how to connect to this server.
+const docsURL = "https://disputes.online/developers#mcp"
+
+// browsersToDocs sends a person who opened the endpoint in a browser to the
+// page that explains it. The protocol answers GET with 405 here, which is right
+// for a client and reads as "broken" to anyone who just pasted the address.
+//
+// Only a request that asks for HTML is redirected. An MCP client asks for JSON
+// or an event stream and must keep getting the protocol's own answer.
+func browsersToDocs(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			http.Redirect(w, r, docsURL, http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func rateLimit(limiter *rate.Limiter, next http.Handler) http.Handler {
