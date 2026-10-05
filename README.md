@@ -87,3 +87,7 @@ Bump `version` in `server.json` before publishing again; the registry refuses a 
 ```bash
 go test ./...
 ```
+
+## License
+
+MIT
