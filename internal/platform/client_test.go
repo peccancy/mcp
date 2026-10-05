@@ -14,7 +14,7 @@ func serve(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return New(srv.URL+"/disputes/", srv.URL+"/category/", time.Second)
+	return New(srv.URL+"/disputes/", srv.URL+"/category/", srv.URL+"/history/", time.Second)
 }
 
 func TestListDisputesBuildsTheQuery(t *testing.T) {
@@ -106,5 +106,36 @@ func TestCategoriesFailWithNothingCached(t *testing.T) {
 	c := serve(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
 	if _, err := c.Categories(context.Background()); err == nil {
 		t.Error("want an error when there is no tree to fall back on")
+	}
+}
+
+func TestGetSettledReadsTheArchive(t *testing.T) {
+	c := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/history/disputes/abc" {
+			t.Errorf("asked for %s, want /history/disputes/abc", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"dispute":{"id":"abc","title":"Who wins?","description":"Who wins?","finished_at":"2026-10-05T10:22:59.792809Z","bet_count":4,"total_bet_amount":12.5},
+			"variants":[{"id":"v1","description":"Comets","is_winner":true,"metadata":{"amount":10,"count_of_bets":3}},
+			            {"id":"v2","description":"Bears","is_winner":false,"metadata":{"amount":2.5,"count_of_bets":1}}]}`))
+	})
+
+	got, err := c.GetSettled(context.Background(), "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Who wins?" || got.TotalBets != 4 || got.TotalAmount != 12.5 || got.FinishedAt.IsZero() {
+		t.Errorf("dispute decoded as %+v", got)
+	}
+	if len(got.Variants) != 2 || !got.Variants[0].IsWinner || got.Variants[0].Amount != 10 || got.Variants[1].CountOfBets != 1 {
+		t.Errorf("variants decoded as %+v", got.Variants)
+	}
+}
+
+// The archive also holds disputes private to a team. A public server must not
+// distinguish "private" from "absent".
+func TestGetSettledHidesPrivateDisputes(t *testing.T) {
+	c := serve(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	if _, err := c.GetSettled(context.Background(), "abc"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }

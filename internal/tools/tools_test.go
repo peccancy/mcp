@@ -20,8 +20,10 @@ type fakePlatform struct {
 	disputes   []platform.Dispute
 	total      int
 	categories []platform.Category
+	settled    *platform.Settled
 	err        error
 	catErr     error
+	settledErr error
 
 	gotQuery platform.ListQuery
 	gotTags  []string
@@ -45,6 +47,13 @@ func (f *fakePlatform) GetDispute(_ context.Context, id string) (*platform.Dispu
 		return nil, f.err
 	}
 	return &f.disputes[0], nil
+}
+
+func (f *fakePlatform) GetSettled(context.Context, string) (*platform.Settled, error) {
+	if f.settled == nil && f.settledErr == nil {
+		return nil, platform.ErrNotFound
+	}
+	return f.settled, f.settledErr
 }
 
 func (f *fakePlatform) Categories(context.Context) ([]platform.Category, error) {
@@ -303,8 +312,60 @@ func TestGetDisputeErrors(t *testing.T) {
 	}
 
 	p := &fakePlatform{err: platform.ErrNotFound}
-	if msg := call(t, connect(t, p), "get_dispute", map[string]any{"dispute": brazilID}, &Dispute{}); !strings.Contains(msg, "archive") {
-		t.Errorf("a missing dispute should mention the archive, got %q", msg)
+	if msg := call(t, connect(t, p), "get_dispute", map[string]any{"dispute": brazilID}, &Dispute{}); !strings.Contains(msg, "never existed") {
+		t.Errorf("a dispute found neither open nor in the archive should say so, got %q", msg)
+	}
+
+	// A broken archive is not the same as a dispute that does not exist.
+	p = &fakePlatform{err: platform.ErrNotFound, settledErr: errors.New("dial tcp 10.42.0.9:8095: connection refused")}
+	msg := call(t, connect(t, p), "get_dispute", map[string]any{"dispute": brazilID}, &Dispute{})
+	if strings.Contains(msg, "never existed") || strings.Contains(msg, "10.42") {
+		t.Errorf("an archive failure should be reported as a failure, without internals, got %q", msg)
+	}
+}
+
+// Once decided, a dispute leaves the open list. get_dispute follows it to the
+// archive so that a prediction can be checked against what happened.
+func TestGetDisputeFallsBackToTheArchive(t *testing.T) {
+	p := &fakePlatform{
+		err: platform.ErrNotFound,
+		settled: &platform.Settled{
+			ID:          brazilID,
+			Description: "president of Brazil\n\nWho will become the president of Brazil?",
+			FinishedAt:  time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC),
+			TotalBets:   5,
+			TotalAmount: 22,
+			Variants: []platform.SettledVariant{
+				{ID: "v1", Description: "Flávio Bolsonaro", Amount: 16.5, CountOfBets: 3},
+				{ID: "v2", Description: "Lula", Amount: 5.5, CountOfBets: 2, IsWinner: true},
+			},
+		},
+	}
+	var got Dispute
+	if msg := call(t, connect(t, p), "get_dispute", map[string]any{"dispute": brazilID}, &got); msg != "" {
+		t.Fatal(msg)
+	}
+
+	if got.Status != "settled" || got.WinningOutcome != "Lula" || got.SettledAt != "2026-10-25T09:00:00Z" {
+		t.Errorf("status %q, winner %q, settled_at %q", got.Status, got.WinningOutcome, got.SettledAt)
+	}
+	if got.URL != "https://disputes.online/h/"+brazilID {
+		t.Errorf("url = %q, want the archive page", got.URL)
+	}
+	if got.Title != "president of Brazil" {
+		t.Errorf("title = %q", got.Title)
+	}
+	if got.BettingCloses != "" || got.ResultDue != "" {
+		t.Errorf("a settled dispute has no deadlines left, got %q and %q", got.BettingCloses, got.ResultDue)
+	}
+	if len(got.Outcomes) != 2 {
+		t.Fatalf("got %d outcomes, want 2", len(got.Outcomes))
+	}
+	if o := got.Outcomes[0]; o.Won || o.ImpliedProbability != 0.75 {
+		t.Errorf("the loser: won %v, probability %v; want false and 0.75", o.Won, o.ImpliedProbability)
+	}
+	if o := got.Outcomes[1]; !o.Won || o.ImpliedProbability != 0.25 {
+		t.Errorf("the winner: won %v, probability %v; want true and 0.25", o.Won, o.ImpliedProbability)
 	}
 }
 

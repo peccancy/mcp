@@ -33,6 +33,8 @@ Languages: every dispute is written in one language (en, ua, pl, de, …) or mar
 
 When you cite a dispute, link its url and mention the pool size or number of bets.
 
+get_dispute also finds disputes that have been settled: it returns which outcome won next to how the stakes had been split, so a past prediction can be checked against what happened.
+
 Everything here is read-only. Placing bets and creating disputes happen on the site.`
 
 // Platform is what the tools need from disputes.online.
@@ -40,6 +42,7 @@ type Platform interface {
 	ListDisputes(ctx context.Context, q platform.ListQuery) ([]platform.Dispute, int, error)
 	SearchByTags(ctx context.Context, tags []string, lang string, limit, offset int) ([]platform.Dispute, int, error)
 	GetDispute(ctx context.Context, id string) (*platform.Dispute, error)
+	GetSettled(ctx context.Context, id string) (*platform.Settled, error)
 	Categories(ctx context.Context) ([]platform.Category, error)
 }
 
@@ -50,7 +53,8 @@ type Outcome struct {
 	StakedQOT          float64 `json:"staked_qot" jsonschema:"QOT staked on this outcome"`
 	Bets               int     `json:"bets" jsonschema:"number of bets on this outcome"`
 	ImpliedProbability float64 `json:"implied_probability" jsonschema:"this outcome's share of all stakes, from 0 to 1; 0 when nobody has bet on the dispute yet"`
-	PayoutMultiplier   float64 `json:"payout_multiplier" jsonschema:"what a winning stake is multiplied by at the current split of stakes; 0 when nobody has backed this outcome"`
+	PayoutMultiplier   float64 `json:"payout_multiplier" jsonschema:"what a winning stake is multiplied by at the current split of stakes; 0 when nobody has backed this outcome, and for a settled dispute"`
+	Won                bool    `json:"won,omitempty" jsonschema:"true for the outcome that won; only ever set on a settled dispute"`
 }
 
 // Dispute is a dispute as the tools present it.
@@ -59,18 +63,20 @@ type Dispute struct {
 	URL            string    `json:"url" jsonschema:"the dispute's page on disputes.online; link this when citing"`
 	Title          string    `json:"title" jsonschema:"the question, taken from the first line of the description"`
 	Description    string    `json:"description" jsonschema:"the full text, including how the result will be decided"`
-	Status         string    `json:"status" jsonschema:"new: no bets yet; in_process, hot, very_hot: accepting bets, by popularity; ready: betting closed, awaiting the result; done: settled; dispute: the result is being contested"`
-	Language       string    `json:"language" jsonschema:"language code, or all"`
+	Status         string    `json:"status" jsonschema:"new: no bets yet; in_process, hot, very_hot: accepting bets, by popularity; ready: betting closed, awaiting the result; done or dispute: decided but still being paid out or contested; settled: decided and archived, with the winning outcome marked"`
+	Language       string    `json:"language,omitempty" jsonschema:"language code, or all; absent for a settled dispute"`
 	Category       string    `json:"category,omitempty" jsonschema:"category name"`
 	CategoryID     int       `json:"category_id,omitempty" jsonschema:"category id"`
 	Country        string    `json:"country,omitempty" jsonschema:"ISO 3166-1 alpha-2 country the dispute is about"`
 	Tags           []string  `json:"tags" jsonschema:"lowercase tags"`
-	BettingCloses  string    `json:"betting_closes" jsonschema:"when betting closes, RFC 3339 UTC"`
-	ResultDue      string    `json:"result_due" jsonschema:"when the result is due, RFC 3339 UTC"`
+	BettingCloses  string    `json:"betting_closes,omitempty" jsonschema:"when betting closes, RFC 3339 UTC; absent for a settled dispute"`
+	ResultDue      string    `json:"result_due,omitempty" jsonschema:"when the result is due, RFC 3339 UTC; absent for a settled dispute"`
+	SettledAt      string    `json:"settled_at,omitempty" jsonschema:"when the dispute was decided, RFC 3339 UTC; present only for a settled dispute"`
+	WinningOutcome string    `json:"winning_outcome,omitempty" jsonschema:"name of the outcome that won; present only for a settled dispute that had a winner"`
 	DatesEstimated bool      `json:"dates_estimated" jsonschema:"true when the event has no fixed date and the two dates are estimates"`
 	TotalBets      int       `json:"total_bets" jsonschema:"number of bets placed"`
 	TotalStakedQOT float64   `json:"total_staked_qot" jsonschema:"pool size in QOT, the platform's internal currency — not dollars"`
-	Outcomes       []Outcome `json:"outcomes" jsonschema:"the possible results and how the stakes are split between them"`
+	Outcomes       []Outcome `json:"outcomes" jsonschema:"the possible results and how the stakes are split between them — for a settled dispute, how they were split when it was decided"`
 }
 
 // DisputePage is one page of a list of disputes.
@@ -147,7 +153,7 @@ func Register(server *mcp.Server, p Platform, log *slog.Logger) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_dispute",
-		Description: "Get one dispute from disputes.online by its id or page URL: the question, how it will be decided, the outcomes, how the stakes are split between them, and the deadlines.",
+		Description: "Get one dispute from disputes.online by its id or page URL: the question, how it will be decided, the outcomes, how the stakes are split between them, and the deadlines. Also finds a dispute that has already been settled and returns which outcome won next to how the crowd had bet — use it to check a past prediction.",
 		Annotations: readOnly("Get a dispute"),
 	}, h.get)
 
@@ -229,15 +235,26 @@ func (h handlers) get(ctx context.Context, _ *mcp.CallToolRequest, in GetInput) 
 	if id == "" {
 		return nil, Dispute{}, errors.New("give the dispute's id (a UUID) or the URL of its page")
 	}
-	d, err := h.p.GetDispute(ctx, strings.ToLower(id))
-	if err != nil {
-		if errors.Is(err, platform.ErrNotFound) {
-			return nil, Dispute{}, fmt.Errorf("no open dispute with id %s: it may have been settled and moved to the archive, or never existed", id)
-		}
+	id = strings.ToLower(id)
+
+	d, err := h.p.GetDispute(ctx, id)
+	if err == nil {
+		categories, _ := h.p.Categories(ctx)
+		return nil, present(*d, categoryNames(categories)), nil
+	}
+	if !errors.Is(err, platform.ErrNotFound) {
 		return nil, Dispute{}, h.platformError(err)
 	}
-	categories, _ := h.p.Categories(ctx)
-	return nil, present(*d, categoryNames(categories)), nil
+
+	// Not among the open disputes: once decided, a dispute moves to the archive.
+	settled, err := h.p.GetSettled(ctx, id)
+	if err == nil {
+		return nil, presentSettled(*settled), nil
+	}
+	if !errors.Is(err, platform.ErrNotFound) {
+		return nil, Dispute{}, h.platformError(err)
+	}
+	return nil, Dispute{}, fmt.Errorf("no dispute with id %s: it never existed, was removed, or belongs to a private team", id)
 }
 
 func (h handlers) categories(ctx context.Context, _ *mcp.CallToolRequest, _ NoInput) (*mcp.CallToolResult, CategoryList, error) {
@@ -311,6 +328,46 @@ func present(d platform.Dispute, categories map[int]string) Dispute {
 		// which reads as "you get your stake back". There is simply no price yet.
 		if v.Amount > 0 {
 			o.PayoutMultiplier = v.Coefficient
+		}
+		out.Outcomes = append(out.Outcomes, o)
+	}
+	return out
+}
+
+// presentSettled shows an archived dispute: what the crowd had staked on each
+// outcome when it was decided, and which outcome won.
+func presentSettled(s platform.Settled) Dispute {
+	heading := s.Title
+	if heading == "" {
+		heading = title(s.Description)
+	}
+	out := Dispute{
+		ID:             s.ID,
+		URL:            siteURL + "/h/" + s.ID,
+		Title:          heading,
+		Description:    s.Description,
+		Status:         "settled",
+		Tags:           []string{},
+		SettledAt:      s.FinishedAt.UTC().Format(time.RFC3339),
+		TotalBets:      s.TotalBets,
+		TotalStakedQOT: s.TotalAmount,
+		Outcomes:       make([]Outcome, 0, len(s.Variants)),
+	}
+
+	// The archive keeps the pool size on the dispute and the stakes on each
+	// outcome separately. Shares are taken from the outcomes' own sum so that
+	// they add up to 1 whatever the dispute-level figure says.
+	var staked float64
+	for _, v := range s.Variants {
+		staked += v.Amount
+	}
+	for _, v := range s.Variants {
+		o := Outcome{ID: v.ID, Name: v.Description, StakedQOT: v.Amount, Bets: v.CountOfBets, Won: v.IsWinner}
+		if staked > 0 {
+			o.ImpliedProbability = math.Round(v.Amount/staked*10000) / 10000
+		}
+		if v.IsWinner {
+			out.WinningOutcome = v.Description
 		}
 		out.Outcomes = append(out.Outcomes, o)
 	}

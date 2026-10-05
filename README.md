@@ -12,7 +12,7 @@ are split — the crowd's implied odds.
 |---|---|
 | `search_disputes` | Disputes open to bets, filtered by language, category and country, sorted by pool size, number of bets or closing time |
 | `search_disputes_by_tags` | Open disputes carrying any of the given tags |
-| `get_dispute` | One dispute by id or page URL |
+| `get_dispute` | One dispute by id or page URL — open, or already settled, with the winning outcome |
 | `list_categories` | The category tree, to find a `category_id` |
 
 Every dispute comes with its page URL and, per outcome, the share of stakes
@@ -49,6 +49,7 @@ It is stateless: any replica answers any request.
 | `API_PATH` | `/mcp` | Path the protocol is served at |
 | `DISPUTES_URL` | `http://disputes:8080` | Base URL of the dispute service |
 | `CATEGORIES_URL` | `http://categories:8082` | Base URL of the category service |
+| `HISTORY_URL` | `http://history:8095` | Base URL of the history service (settled disputes) |
 | `PLATFORM_TIMEOUT` | `5s` | Timeout for one call to either service |
 | `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` | `20` / `40` | Limit on the total request rate |
 
@@ -60,6 +61,7 @@ It is stateless: any replica answers any request.
 APP_PORT=8098 \
 DISPUTES_URL=https://disputes.online/disputes \
 CATEGORIES_URL=https://disputes.online/category \
+HISTORY_URL=https://disputes.online/history \
 go run ./cmd
 ```
 

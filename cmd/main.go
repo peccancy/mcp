@@ -33,6 +33,7 @@ func main() {
 	client := platform.New(
 		env("DISPUTES_URL", "http://disputes:8080"),
 		env("CATEGORIES_URL", "http://categories:8082"),
+		env("HISTORY_URL", "http://history:8095"),
 		envDuration(log, "PLATFORM_TIMEOUT", 5*time.Second),
 	)
 

@@ -60,6 +60,26 @@ type Variant struct {
 	Coefficient float64 `json:"coefficient"`
 }
 
+// Settled is a dispute that has been decided and moved to the archive.
+type Settled struct {
+	ID          string
+	Title       string
+	Description string
+	FinishedAt  time.Time
+	TotalBets   int
+	TotalAmount float64
+	Variants    []SettledVariant
+}
+
+// SettledVariant is one outcome of a settled dispute.
+type SettledVariant struct {
+	ID          string
+	Description string
+	Amount      float64
+	CountOfBets int
+	IsWinner    bool
+}
+
 // Category is one node of the category tree.
 type Category struct {
 	ID       int    `json:"id"`
@@ -82,6 +102,7 @@ type ListQuery struct {
 type Client struct {
 	disputesURL   string
 	categoriesURL string
+	historyURL    string
 	http          *http.Client
 
 	mu           sync.Mutex
@@ -89,14 +110,15 @@ type Client struct {
 	categoriesAt time.Time
 }
 
-// New returns a client. disputesURL and categoriesURL are the base URLs of the
-// two services: inside the cluster http://disputes:8080 and
-// http://categories:8082, from outside https://disputes.online/disputes and
-// https://disputes.online/category.
-func New(disputesURL, categoriesURL string, timeout time.Duration) *Client {
+// New returns a client. The three arguments are the base URLs of the dispute,
+// category and history services: inside the cluster http://disputes:8080,
+// http://categories:8082 and http://history:8095, from outside
+// https://disputes.online/disputes, /category and /history.
+func New(disputesURL, categoriesURL, historyURL string, timeout time.Duration) *Client {
 	return &Client{
 		disputesURL:   strings.TrimRight(disputesURL, "/"),
 		categoriesURL: strings.TrimRight(categoriesURL, "/"),
+		historyURL:    strings.TrimRight(historyURL, "/"),
 		http:          &http.Client{Timeout: timeout},
 	}
 }
@@ -156,6 +178,57 @@ func (c *Client) GetDispute(ctx context.Context, id string) (*Dispute, error) {
 	return out.Data, nil
 }
 
+// GetSettled returns a dispute from the archive: one that has been decided.
+// The archive holds private team disputes too; those answer 403 and are
+// reported as not found, the same as a dispute that never existed.
+func (c *Client) GetSettled(ctx context.Context, id string) (*Settled, error) {
+	var out struct {
+		Dispute *struct {
+			ID             string    `json:"id"`
+			Title          string    `json:"title"`
+			Description    string    `json:"description"`
+			FinishedAt     time.Time `json:"finished_at"`
+			BetCount       int       `json:"bet_count"`
+			TotalBetAmount float64   `json:"total_bet_amount"`
+		} `json:"dispute"`
+		Variants []struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+			IsWinner    bool   `json:"is_winner"`
+			Metadata    struct {
+				Amount      float64 `json:"amount"`
+				CountOfBets int     `json:"count_of_bets"`
+			} `json:"metadata"`
+		} `json:"variants"`
+	}
+	if err := c.get(ctx, c.historyURL+"/disputes/"+url.PathEscape(id), &out); err != nil {
+		return nil, err
+	}
+	if out.Dispute == nil {
+		return nil, ErrNotFound
+	}
+
+	settled := &Settled{
+		ID:          out.Dispute.ID,
+		Title:       out.Dispute.Title,
+		Description: out.Dispute.Description,
+		FinishedAt:  out.Dispute.FinishedAt,
+		TotalBets:   out.Dispute.BetCount,
+		TotalAmount: out.Dispute.TotalBetAmount,
+		Variants:    make([]SettledVariant, 0, len(out.Variants)),
+	}
+	for _, v := range out.Variants {
+		settled.Variants = append(settled.Variants, SettledVariant{
+			ID:          v.ID,
+			Description: v.Description,
+			Amount:      v.Metadata.Amount,
+			CountOfBets: v.Metadata.CountOfBets,
+			IsWinner:    v.IsWinner,
+		})
+	}
+	return settled, nil
+}
+
 // Categories returns the whole category tree as a flat list. A stale copy is
 // served when the category service is unavailable: the tree is small, changes
 // rarely, and is only used to name and group things.
@@ -204,9 +277,11 @@ func (c *Client) get(ctx context.Context, target string, out any) error {
 	}
 	defer resp.Body.Close()
 
-	// The dispute service answers 400 for an id it cannot parse and 404 for one
-	// it does not have; to a caller both mean the same thing.
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+	// The services answer 400 for an id they cannot parse, 404 for one they do
+	// not have and 403 for an archived dispute that is private to a team; to a
+	// caller of a public, read-only server all three mean "nothing to show".
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest ||
+		resp.StatusCode == http.StatusForbidden {
 		return ErrNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
