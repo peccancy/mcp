@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.peccancy/disputes-online",
+  "name": "online.disputes/mcp",
   "title": "disputes.online",
   "description": "Read prediction disputes and the crowd's odds on real-world events from disputes.online.",
   "version": "1.0.0",

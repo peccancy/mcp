@@ -69,14 +69,15 @@ Then point a client, or `npx @modelcontextprotocol/inspector`, at `http://localh
 
 ## Publishing to the MCP registry
 
-`server.json` describes this server for the [official MCP registry](https://registry.modelcontextprotocol.io).
-Its name, `io.github.peccancy/disputes-online`, is tied to the `peccancy` GitHub organisation, so
-publishing takes an owner of that organisation:
+`server.json` describes this server for the [official MCP registry](https://registry.modelcontextprotocol.io)
+under the name `online.disputes/mcp`. That namespace belongs to whoever controls disputes.online:
+the site serves a public key at `https://disputes.online/.well-known/mcp-registry-auth`, and
+publishing takes the matching private key, kept outside this repository at
+`~/.mcp-registry/disputes.online.pem`.
 
 ```bash
 brew install mcp-publisher
-mcp-publisher login github
-mcp-publisher publish
+./publish.sh
 ```
 
 Bump `version` in `server.json` before publishing again; the registry refuses a version it already has.
