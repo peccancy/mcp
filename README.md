@@ -65,6 +65,20 @@ go run ./cmd
 
 Then point a client, or `npx @modelcontextprotocol/inspector`, at `http://localhost:8098/mcp`.
 
+## Publishing to the MCP registry
+
+`server.json` describes this server for the [official MCP registry](https://registry.modelcontextprotocol.io).
+Its name, `io.github.peccancy/disputes-online`, is tied to the `peccancy` GitHub organisation, so
+publishing takes an owner of that organisation:
+
+```bash
+brew install mcp-publisher
+mcp-publisher login github
+mcp-publisher publish
+```
+
+Bump `version` in `server.json` before publishing again; the registry refuses a version it already has.
+
 ## Tests
 
 ```bash

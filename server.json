@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.peccancy/disputes-online",
+  "title": "disputes.online",
+  "description": "Read prediction disputes and the crowd's odds on real-world events from disputes.online.",
+  "version": "1.0.0",
+  "websiteUrl": "https://disputes.online/developers",
+  "repository": {
+    "url": "https://github.com/peccancy/mcp",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://disputes.online/mcp"
+    }
+  ]
+}
